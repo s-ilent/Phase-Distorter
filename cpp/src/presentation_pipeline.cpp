@@ -1,4 +1,5 @@
 #include "eb/presentation_pipeline.hpp"
+#include "eb/profiler.hpp"
 
 #include <algorithm>
 #include <cmath>
@@ -87,6 +88,8 @@ void PresentationPipeline::restored_frame(PresentationFrame frame, Time now) {
 }
 
 void PresentationPipeline::completed_frame(PresentationFrame frame) {
+    // Runs inside the producer's advance_frame, so its cost reads as simulation.
+    ZoneScopedN("Completed frame submit");
     if (reduce_flashing_) {
         current_picture_ = {photosensitivity_filter_.apply(frame.pixels, int(frame.width),
                                                            DisplaySettings::native_height, true, frame.flashing),
@@ -130,7 +133,7 @@ void PresentationPipeline::simulation_finished(PresentationFrame current_frame, 
     elapsed_frames = std::max<std::uint64_t>(elapsed_frames, 1);
     native_wait_pending_ = false;
     if (high_rate_) {
-        presentation_clock_.simulated(elapsed_frames);
+        presentation_clock_.simulated(now, elapsed_frames);
         if (presentation_clock_.simulation_due(now))
             catch_up_frames_ += elapsed_frames;
     } else {
@@ -144,7 +147,13 @@ bool PresentationPipeline::simulation_due(Time now) {
     if (!high_rate_)
         return true;
     presentation_clock_.resume(now);
-    return presentation_clock_.simulation_due(now);
+    if (presentation_clock_.simulation_due(now)) {
+        TracyPlot("Tick late (ms)", std::max(0.0, std::chrono::duration<double, std::milli>(
+                                                          now - presentation_clock_.scheduled_tick())
+                                                          .count()));
+        return true;
+    }
+    return false;
 }
 
 bool PresentationPipeline::presentation_due(Time now) const {
@@ -156,6 +165,7 @@ bool PresentationPipeline::presentation_due(Time now) const {
 }
 
 PresentationPicture PresentationPipeline::picture(Time now) {
+    ZoneScopedN("Sample picture");
     if (high_rate_ && interpolator_.width()) {
         const auto& scene = scene_motion_.sample(presentation_clock_.fraction(now));
         return {interpolator_.sample(presentation_clock_.fraction(now)), interpolator_.width(),

@@ -84,6 +84,11 @@ omit presentation slots while simulation catches up. Long suspensions reset the
 host clock instead of producing an unbounded backlog. A slow computer or a driver
 swap limit can still prevent reaching the requested rate.
 
+Interpolated positions span the measured gap between actual tick arrivals, and
+draws entering a short clearance before a tick deadline are deferred past it, so
+host jitter and swap stalls stretch or defer pictures instead of delaying
+simulation ticks or freezing interpolation at its endpoint.
+
 **Direct scene rendering** is enabled by default for higher rates. It draws
 background planes and native actor parts directly at the window's
 resolution. Camera and actor positions are interpolated between native ticks;
@@ -131,6 +136,46 @@ measures 3.333 ms at 300 Hz under Wine. Linux retains its steady-clock sleep.
 `presentation_wait_probe` is a separate real-clock check, outside deterministic
 CTest because host scheduling can affect its measurements. This change also
 improves the Native pacing path on Windows.
+
+## Profiling frame pacing with Tracy
+
+CMake option `EB_ENABLE_TRACY` compiles the vendored Tracy client
+(`cpp/external/tracy`, see its PROVENANCE.md) into the desktop application:
+
+    cmake -S . -B build -DCMAKE_BUILD_TYPE=RelWithDebInfo -DEB_ENABLE_TRACY=ON
+    cmake --build build -j8 --target eb_cpp
+
+Instrumentation is active immediately and the client listens on
+127.0.0.1:8086. Start the [Tracy profiler GUI](https://github.com/wolfpld/tracy/releases)
+on the same machine, connect to the application and record a few seconds of
+overworld walking. Without the option every hook compiles to nothing
+(`cpp/include/eb/profiler.hpp`); no Tracy header is parsed and no trace code
+runs. Profiling builds are diagnostics only: they must not be used as the
+measured side of a timing comparison.
+
+Each presented picture closes one profiler frame (`FrameMark` directly after
+the swap), so the frame-time histogram is the quickest read: a solid FPS
+counter with choppy motion appears as a bimodal histogram whose slow mode
+aligns with one of the plots below.
+
+- **Swap gap (ms)** — interval between completed `SDL_GL_SwapWindow` calls.
+  With vsync this sits at one refresh; alternating single/double refresh gaps
+  are missed vblanks, meaning a swap was submitted after its vblank window.
+- **Sim frame (ms)** — wall time of one `advance_frame`, including
+  interpolation submission and audio delivery. Spikes past the display period
+  consume the sleep budget and cause the missed vblanks above.
+- **Wake late (ms)** — how far the loop woke past its pacing deadline. A value
+  near one period accuses the wait itself (timer slack, scheduler contention)
+  rather than the game.
+- **Audio queued (ms)** — playback jitter-buffer depth. A sawtooth decaying to
+  zero marks the audio clock outrunning delivery; each bottoming out is a
+  heard dropout.
+
+Zones cover `Simulation frame` (with `Completed frame submit` inside it, the
+motion-estimation/interpolation cost hidden inside a game tick), `Sleep`,
+`Audio drain`, the display present path (`draw`, `draw_scene`, `apply_crt`,
+`Swap buffers`) and `Sample picture`. The audio callback thread names itself
+`SDL audio`; the game thread is `Main`.
 
 ## Verification
 
