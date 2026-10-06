@@ -1,4 +1,5 @@
 #include "eb/frame_presenter.hpp"
+#include "eb/profiler.hpp"
 
 // This layer draws completed pictures or immutable source scenes. It never
 // advances the game or changes the hardware framebuffer.
@@ -44,6 +45,7 @@ void FramePresenter::draw(std::span<const std::uint32_t, width * height> pixels,
 void FramePresenter::draw(std::span<const std::uint32_t> pixels, int source_width, int source_height,
                           int drawable_width, int drawable_height, double display_aspect,
                           int top_inset_pixels) {
+    ZoneScoped;
     // Check the dynamic span before conversion or allocation. This overload is
     // also used when the widescreen setting changes while the game is running.
     if (source_width <= 0 || source_height <= 0 || source_width > 4096 || source_height > 4096 ||
@@ -127,6 +129,7 @@ bool FramePresenter::begin_draw(int drawable_width, int drawable_height, double 
 
 bool FramePresenter::draw_scene(const DirectScenePicture& picture, int drawable_width, int drawable_height,
                                 double display_aspect, int top_inset_pixels) {
+    ZoneScoped;
     if (!picture.artwork) return false;
     const auto& scene = *picture.artwork;
     GLint depth{}, stencil{};
@@ -223,6 +226,7 @@ bool FramePresenter::draw_scene(const DirectScenePicture& picture, int drawable_
 }
 
 void FramePresenter::apply_crt(bool enabled) {
+    ZoneScoped;
     if (!enabled || drawable_width_ <= 0 || drawable_height_ <= 0) return;
     if (!crt_) crt_ = std::make_unique<CrtFilter>();
     crt_->draw(texture_, source_width_, source_height_, direct_scene_);

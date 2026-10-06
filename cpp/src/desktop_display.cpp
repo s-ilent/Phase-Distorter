@@ -9,15 +9,18 @@
 #include "eb/frame_presenter.hpp"
 #include "eb/game_session.hpp"
 #include "eb/launch_options.hpp"
+#include "eb/profiler.hpp"
 #include "eb/session_storage.hpp"
 #include "desktop_input.hpp"
 #include "generated_assets.hpp"
 #include <SDL_opengl.h>
 #include <algorithm>
 #include <array>
+#include <chrono>
 #include <cmath>
 #include <filesystem>
 #include <iostream>
+#include <optional>
 #include <stdexcept>
 #include <utility>
 #ifdef __linux__
@@ -250,6 +253,7 @@ struct DesktopDisplay::Impl {
 
     void present(const SessionDiagnostics &session, PresentationPicture picture,
                  const std::string &capture = {}) {
+        ZoneScoped;
         int drawable_width = 0, drawable_height = 0;
         SDL_GL_GetDrawableSize(window_, &drawable_width, &drawable_height);
         const int top_inset = menu_height_pixels(drawable_height);
@@ -307,7 +311,17 @@ struct DesktopDisplay::Impl {
         // Read back before swap so captures contain this frame and its overlay.
         if (!capture.empty())
             presenter_->capture().write_ppm(capture);
-        SDL_GL_SwapWindow(window_);
+        {
+            ZoneScopedN("Swap buffers");
+            SDL_GL_SwapWindow(window_);
+        }
+        // With vsync, a doubled gap means the swap missed its vblank window.
+        const auto swapped = std::chrono::steady_clock::now();
+        if (last_swap_) {
+            const double gap_ms = std::chrono::duration<double, std::milli>(swapped - *last_swap_).count();
+            TracyPlot("Swap gap (ms)", gap_ms);
+        }
+        last_swap_ = swapped;
     }
 
   private:
@@ -316,6 +330,7 @@ struct DesktopDisplay::Impl {
 #endif
     bool vsync_requested_ = true;
     int requested_swap_interval_ = -2;
+    std::optional<std::chrono::steady_clock::time_point> last_swap_;
     int menu_height_pixels(int drawable_height) const {
         // Fullscreen uses the entire window. The hover bar overlays the picture
         // without resizing it whenever the pointer enters/leaves the top edge.

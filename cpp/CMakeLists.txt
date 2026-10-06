@@ -11,6 +11,7 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 option(EB_BUILD_FRONTEND "Build the SDL2/OpenGL desktop executable" ON)
 option(EB_BUILD_TESTS "Build CPU and hardware verification programs" ON)
 option(EB_GAMEPLAY_AUDIT "Instrument ordered hardware accesses for runtime differential checks" OFF)
+option(EB_ENABLE_TRACY "Instrument frame pacing for the Tracy profiler; connect a Tracy GUI to 127.0.0.1:8086" OFF)
 set(EB_PREGENERATED_DIR "" CACHE PATH "Compile existing generated C++ without assembly source or assembler tools")
 if(NOT EB_PREGENERATED_DIR OR EB_BUILD_TESTS)
     find_package(Python3 REQUIRED COMPONENTS Interpreter)
@@ -108,6 +109,25 @@ else()
         ${EB_GENERATED_SOURCES} ${EB_GENERATED_REPORTS} ${EB_GENERATED_HEADERS} ${EB_GAME_RUNTIME_SOURCES} ${EB_RUNTIME_REPORTS})
     add_custom_target(eb_generate DEPENDS ${EB_GENERATED_SOURCES} ${EB_GENERATED_REPORTS} ${EB_GENERATED_HEADERS} ${EB_GAME_RUNTIME_SOURCES} ${EB_RUNTIME_REPORTS})
 endif()
+# Optional Tracy instrumentation (external/tracy, see its PROVENANCE.md). The
+# client compiles once here; consumers only receive EB_TRACY, TRACY_ENABLE and
+# the include path. Without this option eb_tracy is an empty interface and the
+# eb/profiler.hpp hooks compile to nothing.
+if(EB_ENABLE_TRACY)
+    find_package(Threads REQUIRED)
+    add_library(eb_tracy STATIC external/tracy/TracyClient.cpp)
+    target_include_directories(eb_tracy SYSTEM PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/external/tracy")
+    target_compile_definitions(eb_tracy PUBLIC EB_TRACY TRACY_ENABLE)
+    target_compile_features(eb_tracy PUBLIC cxx_std_11)
+    target_link_libraries(eb_tracy PUBLIC Threads::Threads ${CMAKE_DL_LIBS})
+    if(WIN32 AND CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
+        target_link_libraries(eb_tracy PUBLIC ws2_32 dbghelp secur32)
+        target_compile_definitions(eb_tracy PUBLIC WINVER=0x0A00 _WIN32_WINNT=0x0A00)
+    endif()
+else()
+    add_library(eb_tracy INTERFACE)
+endif()
+
 # Separate game hardware, asset I/O, sound synthesis, and host presentation.
 # Asset tests and rendering fixtures can then exercise their contracts without
 # booting the game or requiring a retail asset pack.
@@ -187,7 +207,7 @@ target_include_directories(eb_asset_cache PUBLIC include)
 # testable without opening a window or altering the simulation clock.
 add_library(eb_filter STATIC src/photosensitivity_filter.cpp src/frame_interpolator.cpp src/presentation_pipeline.cpp)
 target_include_directories(eb_filter PUBLIC include)
-target_link_libraries(eb_filter PUBLIC eb_scene)
+target_link_libraries(eb_filter PUBLIC eb_scene eb_tracy)
 if(MINGW)
     target_link_options(eb_scene INTERFACE -static -static-libgcc -static-libstdc++)
     target_link_options(eb_core INTERFACE -static -static-libgcc -static-libstdc++)
@@ -232,7 +252,7 @@ if(EB_BUILD_FRONTEND)
     install(DIRECTORY external/crt-lottes-fast/ DESTINATION share/eb_cpp/crt-lottes-fast)
     target_include_directories(eb_video PUBLIC include)
     target_compile_definitions(eb_video PUBLIC SDL_MAIN_HANDLED)
-    target_link_libraries(eb_video PUBLIC SDL2::SDL2 OpenGL::GL)
+    target_link_libraries(eb_video PUBLIC SDL2::SDL2 OpenGL::GL eb_tracy)
     add_library(eb_imgui STATIC
         external/imgui/imgui.cpp external/imgui/imgui_draw.cpp
         external/imgui/imgui_tables.cpp external/imgui/imgui_widgets.cpp
@@ -250,10 +270,10 @@ if(EB_BUILD_FRONTEND)
         src/launch_options.cpp src/display_preferences.cpp src/controller_preferences.cpp src/input_replay.cpp
         src/session_storage.cpp src/audio_output.cpp src/snapshot_store.cpp)
     target_include_directories(eb_desktop_support PUBLIC include)
-    target_link_libraries(eb_desktop_support PUBLIC eb_video)
+    target_link_libraries(eb_desktop_support PUBLIC eb_video eb_tracy)
     add_library(eb_desktop STATIC src/desktop_display.cpp src/desktop_input.cpp)
     target_include_directories(eb_desktop PUBLIC include)
-    target_link_libraries(eb_desktop PUBLIC eb_desktop_support eb_debug_panel eb_assets eb_asset_cache eb_core)
+    target_link_libraries(eb_desktop PUBLIC eb_desktop_support eb_debug_panel eb_assets eb_asset_cache eb_core eb_tracy)
     add_executable(eb_cpp src/desktop_application.cpp)
     if(UNIX AND NOT APPLE)
         # Release ZIPs place their SDL/C++ runtimes next to the application in
@@ -278,7 +298,7 @@ if(EB_BUILD_FRONTEND)
         target_sources(eb_cpp PRIVATE "${CMAKE_CURRENT_BINARY_DIR}/phase-distorter.rc")
     endif()
     add_dependencies(eb_cpp eb_generate)
-    target_link_libraries(eb_cpp PRIVATE eb_session eb_desktop eb_filter)
+    target_link_libraries(eb_cpp PRIVATE eb_session eb_desktop eb_filter eb_tracy)
     if(MINGW)
         # Keep the package self-contained except for SDL2.dll and Windows system DLLs.
         target_link_options(eb_video INTERFACE -static -static-libgcc -static-libstdc++)

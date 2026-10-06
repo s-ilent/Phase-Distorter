@@ -1,5 +1,6 @@
 #include "eb/audio_output.hpp"
 #include "eb/frame_pacer.hpp"
+#include "eb/profiler.hpp"
 #include "eb/snes_audio_dsp.hpp"
 #include <SDL.h>
 #include <cmath>
@@ -110,6 +111,8 @@ void DeviceAudioQueue::append(std::span<const std::int16_t> samples) {
         throw;
     }
     SDL_UnlockAudioDevice(device_);
+    TracyPlot("Audio queued (ms)", 1000.0 * double(buffer_.queued_frames()) /
+                                       double(eb::SnesAudioDsp::output_sample_rate));
 }
 
 void DeviceAudioQueue::clear() {
@@ -119,6 +122,11 @@ void DeviceAudioQueue::clear() {
 }
 
 void DeviceAudioQueue::consume(void* context, std::uint8_t* stream, int bytes) {
+    static thread_local const bool thread_named = [] {
+        EB_TRACY_THREAD_NAME("SDL audio");
+        return true;
+    }();
+    (void)thread_named;
     auto& self = *static_cast<DeviceAudioQueue*>(context);
     self.buffer_.consume({reinterpret_cast<std::int16_t*>(stream), std::size_t(bytes) / sizeof(std::int16_t)});
 }

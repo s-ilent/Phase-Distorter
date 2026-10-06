@@ -8,11 +8,13 @@
 #include "eb/launch_options.hpp"
 #include "eb/presentation_pipeline.hpp"
 #include "eb/presentation_wait.hpp"
+#include "eb/profiler.hpp"
 #include "eb/session_storage.hpp"
 #include "eb/snapshot_store.hpp"
 #include "generated_assets.hpp"
 
 #include <SDL.h>
+#include <algorithm>
 #include <chrono>
 #include <cstdlib>
 #include <filesystem>
@@ -33,6 +35,7 @@ constexpr int height = DisplaySettings::native_height;
 int run_session(LaunchOptions options, std::optional<PendingGameSwitch> &next) {
     try {
         SDL_SetMainReady();
+        EB_TRACY_THREAD_NAME("Main");
         char *directory = SDL_GetPrefPath("ebsrc", "EarthBoundCpp");
         if (!directory)
             throw std::runtime_error(std::string("Cannot find application data directory: ") +
@@ -147,6 +150,7 @@ int run_session(LaunchOptions options, std::optional<PendingGameSwitch> &next) {
         refresh_snapshots("");
 
         const auto drain_audio = [&] {
+            ZoneScopedN("Audio drain");
             const auto samples = session.take_audio_samples();
             if (wave)
                 wave->append(samples);
@@ -159,11 +163,18 @@ int run_session(LaunchOptions options, std::optional<PendingGameSwitch> &next) {
                 display->present(session.diagnostics(display->wants_register_diagnostics()),
                                  presentation.picture(now));
                 presentation.presented(std::chrono::steady_clock::now());
+                FrameMark;
             }
             now = std::chrono::steady_clock::now();
             const auto deadline = presentation.wake_time(now);
-            if (deadline > now)
+            if (deadline > now) {
+                ZoneScopedN("Sleep");
                 wait_for_presentation(deadline);
+                const double late_ms = std::chrono::duration<double, std::milli>(
+                                           std::chrono::steady_clock::now() - deadline)
+                                           .count();
+                TracyPlot("Wake late (ms)", std::max(0.0, late_ms));
+            }
         };
 
         int status = 0;
@@ -247,7 +258,16 @@ int run_session(LaunchOptions options, std::optional<PendingGameSwitch> &next) {
                 }
                 const auto buttons =
                     input.buttons_for_frame(session.frames(), options.replay_only ? 0 : physical_buttons);
-                const auto completed_frames = session.advance_frame(buttons, options.steps);
+                std::uint64_t completed_frames = 0;
+                {
+                    ZoneScopedN("Simulation frame");
+                    const auto advance_started = std::chrono::steady_clock::now();
+                    completed_frames = session.advance_frame(buttons, options.steps);
+                    const double advance_ms = std::chrono::duration<double, std::milli>(
+                                                  std::chrono::steady_clock::now() - advance_started)
+                                                  .count();
+                    TracyPlot("Sim frame (ms)", advance_ms);
+                }
                 drain_audio();
                 presentation.simulation_finished(session.presentation_frame(), completed_frames,
                                                  std::chrono::steady_clock::now());
