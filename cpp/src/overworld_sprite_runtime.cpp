@@ -124,7 +124,7 @@ struct OverworldSpriteRuntime::State {
         releases.clear();
         ++counts.resets;
     }
-    void select(MainCpu65816 &cpu, SnesBus &bus, unsigned byte_slot, bool eight) {
+    bool select(MainCpu65816 &cpu, SnesBus &bus, unsigned byte_slot, bool eight) {
         auto &actor = actors[index(byte_slot)];
         if (!actor.id)
             unsupported("pose has no committed ordinary resource", cpu.program_counter);
@@ -135,7 +135,7 @@ struct OverworldSpriteRuntime::State {
         const auto group =
             high >= 0xc0 && high < 0xf0 ? resources->group_for_frame_table(address - 0xc00000) : std::nullopt;
         if (!group || word(ram, l.graphics_bank + byte_slot) != graphics_banks[*group])
-            unsupported("pose artwork is not declared imported content", cpu.program_counter);
+            return false;
         const auto previous = allocations.snapshot(actor.id);
         const auto &geometry = previous.creation.sprite;
         if (word(ram, l.byte_width + byte_slot) != geometry.width * 4 ||
@@ -181,6 +181,7 @@ struct OverworldSpriteRuntime::State {
             (cpu.status_register & ~(MainCpu65816::Accumulator8Bit | MainCpu65816::Negative)) |
             MainCpu65816::Zero;
         return_service(cpu, !eight);
+        return true;
     }
 };
 OverworldSpriteRuntime::OverworldSpriteRuntime(std::span<const std::uint8_t> assets, GameVersion version)
@@ -313,9 +314,8 @@ bool OverworldSpriteRuntime::try_execute(MainCpu65816 &cpu, SnesBus &bus) {
         return_service(cpu, true);
         return true;
     } else if (pc == l.four || pc == l.eight) {
-        state.select(cpu, bus, pc == l.four ? cpu.y_index : word(bus.work_ram, l.update_offset),
-                     pc == l.eight);
-        return true;
+        return state.select(cpu, bus, pc == l.four ? cpu.y_index : word(bus.work_ram, l.update_offset),
+                            pc == l.eight);
     } else if (pc == l.custom) {
         state.actors[index(word(bus.work_ram, std::uint16_t(cpu.direct_page + 0x88)))].custom = true;
     } else if (pc == l.mutable_upload) {
